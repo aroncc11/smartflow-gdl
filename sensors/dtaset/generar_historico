@@ -1,0 +1,252 @@
+# generar_historico.py
+# Generador de dataset historico para entrenar el modelo Random Forest
+# SmartFlow GDL 2026 - Universidad de Guadalajara / CUCEI
+#
+# Genera datos de las ultimas 2 semanas simulando:
+#   - Todas las horas del dia (0-23)
+#   - Todos los dias de la semana (0-6)
+#   - Todos los climas posibles
+#   - Horarios pico y normales
+#   - Incidentes aleatorios
+#
+# Inserta los datos directamente en Supabase
+
+import random
+import sys
+import os
+from datetime import datetime, timedelta
+
+# Agregar carpeta padre al path para importar sensor_base
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from sqlalchemy import create_engine, Column, Integer, Float, String, Boolean, DateTime
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+
+# ─────────────────────────────────────────────────────────────
+# CONEXION A SUPABASE
+# ─────────────────────────────────────────────────────────────
+DATABASE_URL = "postgresql+pg8000://postgres:sMARTFLOWgdl@db.ipcunenaytijdproskxf.supabase.co:5432/postgres"
+
+engine       = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(bind=engine)
+Base         = declarative_base()
+
+# ─────────────────────────────────────────────────────────────
+# MODELO DE TABLA
+# ─────────────────────────────────────────────────────────────
+class TrafficReadingDB(Base):
+    __tablename__ = "traffic_readings"
+
+    id               = Column(Integer, primary_key=True, index=True)
+    intersection_id  = Column(String(10), nullable=False)
+    intersection_name= Column(String(100))
+    lat              = Column(Float)
+    lon              = Column(Float)
+    timestamp        = Column(DateTime)
+    vehicles_count   = Column(Integer)
+    avg_speed_kmh    = Column(Float)
+    congestion_level = Column(String(10))
+    incident_flag    = Column(Boolean, default=False)
+    incident_detail  = Column(String(200), nullable=True)
+    weather          = Column(String(20))
+    hour_of_day      = Column(Integer)
+    day_of_week      = Column(Integer)
+    is_peak_hour     = Column(Boolean)
+    historical_avg   = Column(Float)
+    created_at       = Column(DateTime, default=datetime.utcnow)
+
+
+# ─────────────────────────────────────────────────────────────
+# CONFIGURACION DE INTERSECCIONES
+# ─────────────────────────────────────────────────────────────
+INTERSECCIONES = [
+    {"id": "INT-001", "nombre": "Av. Vallarta - Av. Yaquis",
+     "lat": 20.6743, "lon": -103.3937,
+     "volumen_pico": 3500, "volumen_normal": 1800, "velocidad_libre": 50},
+    {"id": "INT-002", "nombre": "Av. Lopez Mateos - Av. de las Americas",
+     "lat": 20.6963551, "lon": -103.3734237,
+     "volumen_pico": 2800, "volumen_normal": 1400, "velocidad_libre": 28},
+    {"id": "INT-003", "nombre": "Av. Guadalupe - San Ignacio",
+     "lat": 20.6706347, "lon": -103.4050178,
+     "volumen_pico": 2100, "volumen_normal": 1050, "velocidad_libre": 45},
+    {"id": "INT-004", "nombre": "Av. Vallarta - Ninos Heroes",
+     "lat": 20.6668608, "lon": -103.3689243,
+     "volumen_pico": 2400, "volumen_normal": 1200, "velocidad_libre": 25},
+    {"id": "INT-005", "nombre": "Av. Lopez Mateos Sur - Mariano Otero",
+     "lat": 20.6475138, "lon": -103.4048619,
+     "volumen_pico": 3200, "volumen_normal": 1600, "velocidad_libre": 55},
+]
+
+# ─────────────────────────────────────────────────────────────
+# FACTORES
+# ─────────────────────────────────────────────────────────────
+FACTORES_HORA = {
+    0: 0.05,  1: 0.04,  2: 0.03,  3: 0.03,
+    4: 0.04,  5: 0.10,  6: 0.35,  7: 0.85,
+    8: 1.00,  9: 0.80, 10: 0.55, 11: 0.60,
+   12: 0.70, 13: 0.65, 14: 0.55, 15: 0.60,
+   16: 0.75, 17: 0.90, 18: 0.95, 19: 1.00,
+   20: 0.80, 21: 0.55, 22: 0.35, 23: 0.15,
+}
+
+FACTORES_DIA = {
+    0: 0.95, 1: 1.00, 2: 1.00,
+    3: 0.98, 4: 0.95, 5: 0.80, 6: 0.60,
+}
+
+FACTORES_VELOCIDAD_CLIMA = {
+    "clear": 1.00, "cloudy": 0.95,
+    "rain":  0.75, "heavy_rain": 0.55,
+}
+
+FACTORES_VOLUMEN_CLIMA = {
+    "clear": 1.00, "cloudy": 1.00,
+    "rain":  0.85, "heavy_rain": 0.65,
+}
+
+TIPOS_INCIDENTE = [
+    "Accidente vehicular",
+    "Cierre vial por obra",
+    "Manifestacion",
+    "Vehiculo descompuesto",
+    "Evento masivo cercano",
+]
+
+CLIMAS = ["clear", "cloudy", "rain", "heavy_rain"]
+
+
+# ─────────────────────────────────────────────────────────────
+# GENERADOR DE LECTURA HISTORICA
+# ─────────────────────────────────────────────────────────────
+def generar_lectura(config: dict, timestamp: datetime, clima: str) -> dict:
+    hora = timestamp.hour
+    dia  = timestamp.weekday()
+
+    factor_hora  = FACTORES_HORA[hora]
+    factor_dia   = FACTORES_DIA[dia]
+    factor_clima = FACTORES_VOLUMEN_CLIMA[clima]
+
+    # Incidente aleatorio 2%
+    incidente = random.random() < 0.02
+    detalle   = random.choice(TIPOS_INCIDENTE) if incidente else None
+    factor_i  = 1.25 if incidente else 1.0
+
+    base = config["volumen_pico"] if factor_hora >= 0.80 \
+           else config["volumen_normal"]
+
+    vehiculos = (base * factor_hora * factor_dia *
+                 factor_clima * factor_i) / 120
+    vehiculos = max(0, round(vehiculos * random.gauss(1.0, 0.10)))
+
+    capacidad_30s   = config["volumen_pico"] / 120
+    ratio           = min(vehiculos / max(capacidad_30s, 1), 1.0)
+    vel_libre       = config["velocidad_libre"]
+    factor_vel_clim = FACTORES_VELOCIDAD_CLIMA[clima]
+
+    velocidad = vel_libre * (1 - 0.85 * ratio) * factor_vel_clim
+    velocidad = max(5.0, round(velocidad * random.gauss(1.0, 0.05), 1))
+
+    if velocidad > 35:
+        congestion = "low"
+    elif velocidad > 15:
+        congestion = "medium"
+    else:
+        congestion = "high"
+
+    is_peak = hora in range(7, 10) or hora in range(17, 21)
+
+    return {
+        "intersection_id":   config["id"],
+        "intersection_name": config["nombre"],
+        "lat":               config["lat"],
+        "lon":               config["lon"],
+        "timestamp":         timestamp,
+        "vehicles_count":    vehiculos,
+        "avg_speed_kmh":     velocidad,
+        "congestion_level":  congestion,
+        "incident_flag":     incidente,
+        "incident_detail":   detalle,
+        "weather":           clima,
+        "hour_of_day":       hora,
+        "day_of_week":       dia,
+        "is_peak_hour":      is_peak,
+        "historical_avg":    round(
+            config["volumen_normal"] * FACTORES_HORA[hora] / 120, 1
+        ),
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────────────────────
+def generar_dataset(dias: int = 14, registros_por_hora: int = 6):
+    """
+    Genera datos historicos de los ultimos N dias.
+    registros_por_hora: lecturas por hora por interseccion (cada 10 min = 6)
+    """
+    db = SessionLocal()
+
+    fecha_fin    = datetime.now()
+    fecha_inicio = fecha_fin - timedelta(days=dias)
+
+    total_generados = 0
+    batch           = []
+    batch_size      = 500
+
+    print("=" * 55)
+    print("  SmartFlow GDL - Generador de Dataset Historico")
+    print(f"  Periodo: {fecha_inicio.strftime('%d/%m/%Y')} "
+          f"al {fecha_fin.strftime('%d/%m/%Y')}")
+    print(f"  Intersecciones: {len(INTERSECCIONES)}")
+    print(f"  Dias: {dias}")
+    print("=" * 55)
+
+    # Iterar por cada hora del periodo
+    fecha_actual = fecha_inicio
+    while fecha_actual < fecha_fin:
+        # Clima estable por hora (igual que sensor_base.py)
+        clima_hora = random.choices(
+            CLIMAS,
+            weights=[0.50, 0.25, 0.20, 0.05]
+        )[0]
+
+        for config in INTERSECCIONES:
+            for _ in range(registros_por_hora):
+                # Timestamp con minutos aleatorios dentro de la hora
+                minuto  = random.randint(0, 59)
+                segundo = random.randint(0, 59)
+                ts = fecha_actual.replace(
+                    minute=minuto, second=segundo, microsecond=0
+                )
+
+                lectura = generar_lectura(config, ts, clima_hora)
+                batch.append(TrafficReadingDB(**lectura))
+
+                # Insertar en lotes para mayor velocidad
+                if len(batch) >= batch_size:
+                    db.bulk_save_objects(batch)
+                    db.commit()
+                    total_generados += len(batch)
+                    batch = []
+                    print(f"  Insertados: {total_generados} registros...")
+
+        fecha_actual += timedelta(hours=1)
+
+    # Insertar el ultimo batch
+    if batch:
+        db.bulk_save_objects(batch)
+        db.commit()
+        total_generados += len(batch)
+
+    db.close()
+
+    print("\n" + "=" * 55)
+    print(f"  Dataset generado exitosamente")
+    print(f"  Total registros insertados: {total_generados}")
+    print(f"  En Supabase -> tabla traffic_readings")
+    print("=" * 55)
+
+
+if __name__ == "__main__":
+    generar_dataset(dias=14, registros_por_hora=6)
