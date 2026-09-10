@@ -15,7 +15,12 @@ from datetime import datetime
 # ─────────────────────────────────────────────────────────────
 # AHORA
 
-DATABASE_URL = "postgresql+pg8000://postgres:sMARTFLOWgdl@db.ipcunenaytijdproskxf.supabase.co:5432/postgres"
+import os
+
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql+pg8000://postgres:sMARTFLOWgdl@db.ipcunenaytijdproskxf.supabase.co:5432/postgres"
+)
 engine       = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine)
 Base         = declarative_base()
