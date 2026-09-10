@@ -13,8 +13,8 @@ from datetime import datetime
 # ─────────────────────────────────────────────────────────────
 # CONEXION A SUPABASE
 # ─────────────────────────────────────────────────────────────
+# SmartFlow GDL - database.py v2
 # AHORA
-
 import os
 
 DATABASE_URL = os.getenv(
