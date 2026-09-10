@@ -19,7 +19,7 @@ import os
 
 DATABASE_URL = os.getenv(
     DATABASE_URL = os.getenv(
-    "DATABASE_URL",
+   "DATABASE_URL",
     "postgresql+psycopg2://postgres:sMARTFLOWgdl@db.ipcunenaytijdproskxf.supabase.co:5432/postgres"
 )
 )
