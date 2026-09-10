@@ -17,7 +17,6 @@ import requests
 
 # ─────────────────────────────────────────────────────────────
 # URL DEL MICROSERVICIO DE INGESTA
-# Cambiar a URL de produccion cuando este desplegado en nube
 # ─────────────────────────────────────────────────────────────
 INGESTA_URL = "http://localhost:8001/readings"
 
@@ -95,17 +94,20 @@ class SensorBase:
         lon             - longitud verificada en Google Maps
         volumen_pico    - vehiculos/hora en hora pico
         volumen_normal  - vehiculos/hora en hora normal
-        velocidad_libre - km/h sin congestion
+        velocidad_libre - km/h sin congestion (calibrado con TomTom)
     """
 
     def __init__(self, config: dict):
-        self.config     = config
-        self._incidente = {"activo": False, "detalle": None}
+        self.config        = config
+        self._incidente    = {"activo": False, "detalle": None}
+        self._clima_actual = self._generar_clima()
+        self._hora_clima   = datetime.now().hour
         print(f"Sensor inicializado: [{config['id']}] {config['nombre']}")
         print(f"   Coordenadas: ({config['lat']}, {config['lon']})")
+        print(f"   Clima inicial: {self._clima_actual}")
 
-    # ── Clima ───────────────────────────────────────────────
-    def _simular_clima(self) -> str:
+    # ── Clima - cambia solo una vez por hora ────────────────
+    def _generar_clima(self) -> str:
         mes = datetime.now().month
         temporada_lluvias = mes in range(5, 11)
         if temporada_lluvias:
@@ -118,6 +120,14 @@ class SensorBase:
                 ["clear", "cloudy", "rain", "heavy_rain"],
                 weights=[0.70, 0.20, 0.09, 0.01]
             )[0]
+
+    def _simular_clima(self) -> str:
+        hora_actual = datetime.now().hour
+        if self._hora_clima != hora_actual:
+            self._clima_actual = self._generar_clima()
+            self._hora_clima   = hora_actual
+            print(f"   [{self.config['id']}] Clima actualizado: {self._clima_actual}")
+        return self._clima_actual
 
     # ── Incidente ───────────────────────────────────────────
     def _simular_incidente(self, clima: str) -> tuple:
@@ -148,7 +158,9 @@ class SensorBase:
 
         vehiculos = (base * factor_hora * factor_dia *
                      factor_clima * factor_inciden) / 120
-        vehiculos = vehiculos * random.gauss(1.0, 0.10)
+
+        # Ruido gaussiano +-15% para variabilidad realista
+        vehiculos = vehiculos * random.gauss(1.0, 0.15)
 
         return max(0, round(vehiculos))
 
@@ -160,18 +172,49 @@ class SensorBase:
         factor_clima    = FACTORES_VELOCIDAD_CLIMA[clima]
 
         velocidad = velocidad_libre * (1 - 0.85 * ratio) * factor_clima
-        velocidad = velocidad * random.gauss(1.0, 0.05)
+
+        # Ruido gaussiano +-15% para variabilidad realista
+        velocidad = velocidad * random.gauss(1.0, 0.15)
 
         return max(5.0, round(velocidad, 1))
 
-    # ── Congestion ──────────────────────────────────────────
+    # ── Congestion con zonas grises ─────────────────────────
     def _calcular_congestion(self, velocidad: float) -> str:
-        if velocidad > 35:
-            return "low"
+        """
+        Congestion con probabilidades en zonas grises.
+        Simula la ambiguedad real del trafico urbano.
+        Evita sobreentrenamiento del modelo de IA.
+        """
+        # Zona claramente libre
+        if velocidad > 40:
+            return random.choices(
+                ["low", "medium"],
+                weights=[0.93, 0.07]
+            )[0]
+        # Zona libre con algo de incertidumbre
+        elif velocidad > 35:
+            return random.choices(
+                ["low", "medium"],
+                weights=[0.80, 0.20]
+            )[0]
+        # Zona gris - puede ser cualquiera
+        elif velocidad > 20:
+            return random.choices(
+                ["low", "medium", "high"],
+                weights=[0.10, 0.78, 0.12]
+            )[0]
+        # Zona media-alta
         elif velocidad > 15:
-            return "medium"
+            return random.choices(
+                ["medium", "high"],
+                weights=[0.75, 0.25]
+            )[0]
+        # Zona claramente congestionada
         else:
-            return "high"
+            return random.choices(
+                ["medium", "high"],
+                weights=[0.12, 0.88]
+            )[0]
 
     # ── Lectura completa ────────────────────────────────────
     def generate_reading(self) -> dict:

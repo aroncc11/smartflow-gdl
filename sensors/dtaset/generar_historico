@@ -11,13 +11,24 @@
 #
 # Inserta los datos directamente en Supabase
 
+# generar_historico.py
+# Generador de dataset historico para entrenar el modelo Random Forest
+# SmartFlow GDL 2026 - Universidad de Guadalajara / CUCEI
+#
+# Genera datos de las ultimas 2 semanas simulando:
+#   - Todas las horas del dia (0-23)
+#   - Todos los dias de la semana (0-6)
+#   - Todos los climas posibles
+#   - Horarios pico y normales
+#   - Incidentes aleatorios
+#   - Ruido realista para evitar sobreentrenamiento
+#
+# Inserta los datos directamente en Supabase
+
 import random
 import sys
 import os
 from datetime import datetime, timedelta
-
-# Agregar carpeta padre al path para importar sensor_base
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy import create_engine, Column, Integer, Float, String, Boolean, DateTime
 from sqlalchemy.ext.declarative import declarative_base
@@ -59,6 +70,7 @@ class TrafficReadingDB(Base):
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURACION DE INTERSECCIONES
+# Velocidades calibradas con TomTom Traffic API
 # ─────────────────────────────────────────────────────────────
 INTERSECCIONES = [
     {"id": "INT-001", "nombre": "Av. Vallarta - Av. Yaquis",
@@ -117,7 +129,7 @@ CLIMAS = ["clear", "cloudy", "rain", "heavy_rain"]
 
 
 # ─────────────────────────────────────────────────────────────
-# GENERADOR DE LECTURA HISTORICA
+# GENERADOR DE LECTURA HISTORICA CON RUIDO REALISTA
 # ─────────────────────────────────────────────────────────────
 def generar_lectura(config: dict, timestamp: datetime, clima: str) -> dict:
     hora = timestamp.hour
@@ -137,7 +149,9 @@ def generar_lectura(config: dict, timestamp: datetime, clima: str) -> dict:
 
     vehiculos = (base * factor_hora * factor_dia *
                  factor_clima * factor_i) / 120
-    vehiculos = max(0, round(vehiculos * random.gauss(1.0, 0.10)))
+
+    # Ruido aumentado a +-15% para mayor variabilidad
+    vehiculos = max(0, round(vehiculos * random.gauss(1.0, 0.15)))
 
     capacidad_30s   = config["volumen_pico"] / 120
     ratio           = min(vehiculos / max(capacidad_30s, 1), 1.0)
@@ -145,14 +159,41 @@ def generar_lectura(config: dict, timestamp: datetime, clima: str) -> dict:
     factor_vel_clim = FACTORES_VELOCIDAD_CLIMA[clima]
 
     velocidad = vel_libre * (1 - 0.85 * ratio) * factor_vel_clim
-    velocidad = max(5.0, round(velocidad * random.gauss(1.0, 0.05), 1))
 
-    if velocidad > 35:
-        congestion = "low"
+    # Ruido en velocidad aumentado a +-15%
+    velocidad = max(5.0, round(velocidad * random.gauss(1.0, 0.15), 1))
+
+    # ── Congestion con ruido realista ──────────────────────
+    # Zona claramente libre — mayormente LOW pero con casos ambiguos
+    if velocidad > 40:
+        congestion = random.choices(
+            ["low", "medium"],
+            weights=[0.93, 0.07]
+        )[0]
+    # Zona libre-media — predomina LOW con algo de MEDIUM
+    elif velocidad > 35:
+        congestion = random.choices(
+            ["low", "medium"],
+            weights=[0.80, 0.20]
+        )[0]
+    # Zona gris — puede ser cualquiera
+    elif velocidad > 20:
+        congestion = random.choices(
+            ["low", "medium", "high"],
+            weights=[0.10, 0.78, 0.12]
+        )[0]
+    # Zona media-alta — predomina MEDIUM con algo de HIGH
     elif velocidad > 15:
-        congestion = "medium"
+        congestion = random.choices(
+            ["medium", "high"],
+            weights=[0.75, 0.25]
+        )[0]
+    # Zona claramente congestionada — mayormente HIGH
     else:
-        congestion = "high"
+        congestion = random.choices(
+            ["medium", "high"],
+            weights=[0.12, 0.88]
+        )[0]
 
     is_peak = hora in range(7, 10) or hora in range(17, 21)
 
@@ -178,12 +219,31 @@ def generar_lectura(config: dict, timestamp: datetime, clima: str) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────
+# BORRAR DATOS ANTERIORES
+# ─────────────────────────────────────────────────────────────
+def limpiar_tabla():
+    db = SessionLocal()
+    try:
+        total = db.query(TrafficReadingDB).count()
+        print(f"  Registros actuales en Supabase: {total}")
+        confirmacion = input("  Borrar todos los registros anteriores? (s/n): ")
+        if confirmacion.lower() == "s":
+            db.query(TrafficReadingDB).delete()
+            db.commit()
+            print("  Tabla limpiada correctamente")
+        else:
+            print("  Conservando registros anteriores")
+    finally:
+        db.close()
+
+
+# ─────────────────────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────────────────────
 def generar_dataset(dias: int = 14, registros_por_hora: int = 6):
     """
     Genera datos historicos de los ultimos N dias.
-    registros_por_hora: lecturas por hora por interseccion (cada 10 min = 6)
+    registros_por_hora: lecturas por hora por interseccion
     """
     db = SessionLocal()
 
@@ -198,14 +258,13 @@ def generar_dataset(dias: int = 14, registros_por_hora: int = 6):
     print("  SmartFlow GDL - Generador de Dataset Historico")
     print(f"  Periodo: {fecha_inicio.strftime('%d/%m/%Y')} "
           f"al {fecha_fin.strftime('%d/%m/%Y')}")
-    print(f"  Intersecciones: {len(INTERSECCIONES)}")
-    print(f"  Dias: {dias}")
+    print(f"  Dias: {dias} | Registros por hora: {registros_por_hora}")
+    print(f"  Total estimado: {dias * 24 * registros_por_hora * len(INTERSECCIONES):,} registros")
     print("=" * 55)
 
-    # Iterar por cada hora del periodo
     fecha_actual = fecha_inicio
     while fecha_actual < fecha_fin:
-        # Clima estable por hora (igual que sensor_base.py)
+        # Clima estable por hora
         clima_hora = random.choices(
             CLIMAS,
             weights=[0.50, 0.25, 0.20, 0.05]
@@ -213,7 +272,6 @@ def generar_dataset(dias: int = 14, registros_por_hora: int = 6):
 
         for config in INTERSECCIONES:
             for _ in range(registros_por_hora):
-                # Timestamp con minutos aleatorios dentro de la hora
                 minuto  = random.randint(0, 59)
                 segundo = random.randint(0, 59)
                 ts = fecha_actual.replace(
@@ -223,17 +281,15 @@ def generar_dataset(dias: int = 14, registros_por_hora: int = 6):
                 lectura = generar_lectura(config, ts, clima_hora)
                 batch.append(TrafficReadingDB(**lectura))
 
-                # Insertar en lotes para mayor velocidad
                 if len(batch) >= batch_size:
                     db.bulk_save_objects(batch)
                     db.commit()
                     total_generados += len(batch)
                     batch = []
-                    print(f"  Insertados: {total_generados} registros...")
+                    print(f"  Insertados: {total_generados:,} registros...")
 
         fecha_actual += timedelta(hours=1)
 
-    # Insertar el ultimo batch
     if batch:
         db.bulk_save_objects(batch)
         db.commit()
@@ -243,10 +299,11 @@ def generar_dataset(dias: int = 14, registros_por_hora: int = 6):
 
     print("\n" + "=" * 55)
     print(f"  Dataset generado exitosamente")
-    print(f"  Total registros insertados: {total_generados}")
+    print(f"  Total registros: {total_generados:,}")
     print(f"  En Supabase -> tabla traffic_readings")
     print("=" * 55)
 
 
 if __name__ == "__main__":
+    limpiar_tabla()
     generar_dataset(dias=14, registros_por_hora=6)

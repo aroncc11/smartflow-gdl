@@ -3,11 +3,38 @@
 # Universidad de Guadalajara / CUCEI
 # Puerto: 8001
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from datetime import datetime
 from models import SensorReading
 from database import TrafficReadingDB, get_db, init_db
+import httpx
+
+def llamar_prediccion(lectura_id: int, lectura: SensorReading):
+    """
+    Llama al microservicio de prediccion despues de guardar una lectura.
+    Si falla no detiene el flujo principal.
+    """
+    try:
+        datos = {
+            "intersection_id": lectura.intersection_id,
+            "reading_id":      lectura_id,
+            "vehicles_count":  lectura.vehicles_count,
+            "avg_speed_kmh":   lectura.avg_speed_kmh,
+            "hour_of_day":     lectura.hour_of_day,
+            "day_of_week":     lectura.day_of_week,
+            "is_peak_hour":    lectura.is_peak_hour,
+            "incident_flag":   lectura.incident_flag,
+            "weather":         lectura.weather,
+            "historical_avg":  lectura.historical_avg,
+        }
+        httpx.post(
+            "http://localhost:8002/predict",
+            json=datos,
+            timeout=3
+        )
+    except Exception:
+        pass  # Si prediccion falla, ingesta sigue funcionando
 
 # ─────────────────────────────────────────────────────────────
 # INICIALIZAR APP
@@ -63,7 +90,8 @@ def health(db: Session = Depends(get_db)):
 @app.post("/readings", status_code=201)
 def recibir_lectura(
     lectura: SensorReading,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = None,
 ):
     try:
         registro = TrafficReadingDB(
@@ -91,6 +119,12 @@ def recibir_lectura(
         print(f"[{lectura.intersection_id}] Lectura #{registro.id} guardada "
               f"- {lectura.congestion_level.upper()} "
               f"| {lectura.avg_speed_kmh} km/h")
+        # Llamar al microservicio de prediccion en segundo plano
+        if background_tasks is not None:
+            background_tasks.add_task(llamar_prediccion, registro.id, lectura)
+        else:
+            # Fallback síncrono si no se inyecta BackgroundTasks
+            llamar_prediccion(registro.id, lectura)
 
         return {
             "mensaje":         "Lectura guardada en Supabase",
