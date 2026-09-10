@@ -15,7 +15,7 @@ from genetic_algorithm import optimizar_semaforos, INTERSECCIONES
 # ─────────────────────────────────────────────────────────────
 # CONEXION A SUPABASE
 # ─────────────────────────────────────────────────────────────
-DATABASE_URL = "postgresql+pg8000://postgres:sMARTFLOWgdl@db.ipcunenaytijdproskxf.supabase.co:5432/postgres"
+DATABASE_URL = "postgresql+psycopg2://postgres:sMARTFLOWgdl@db.ipcunenaytijdproskxf.supabase.co:5432/postgres"
 
 engine       = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine)

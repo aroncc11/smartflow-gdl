@@ -31,7 +31,8 @@ def llamar_optimizacion(niveles: list):
 # ─────────────────────────────────────────────────────────────
 # CONEXION A SUPABASE
 # ─────────────────────────────────────────────────────────────
-DATABASE_URL = "postgresql+pg8000://postgres:sMARTFLOWgdl@db.ipcunenaytijdproskxf.supabase.co:5432/postgres"
+DATABASE_URL = "postgresql+psycopg2://postgres:sMARTFLOWgdl@db.ipcunenaytijdproskxf.supabase.co:5432/postgres"
+
 
 engine       = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine)
