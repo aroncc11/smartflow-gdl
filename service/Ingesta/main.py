@@ -47,8 +47,12 @@ app = FastAPI(
 
 @app.on_event("startup")
 def startup():
-    init_db()
-    print("Base de datos Supabase inicializada")
+    try:
+        init_db()
+        print("Base de datos Supabase inicializada")
+    except Exception as e:
+        print(f"ERROR en startup: {str(e)}")
+        raise e
 
 
 # ─────────────────────────────────────────────────────────────
