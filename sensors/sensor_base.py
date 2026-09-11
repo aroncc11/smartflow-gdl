@@ -18,7 +18,7 @@ import requests
 # ─────────────────────────────────────────────────────────────
 # URL DEL MICROSERVICIO DE INGESTA
 # ─────────────────────────────────────────────────────────────
-INGESTA_URL = "http://localhost:8001/readings"
+INGESTA_URL = "https://smartflow-gdl-production.up.railway.app/readings"
 
 # ─────────────────────────────────────────────────────────────
 # FACTORES HORARIOS - curva bimodal
