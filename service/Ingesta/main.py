@@ -14,22 +14,24 @@ import os
 # ─────────────────────────────────────────────────────────────
 # INICIALIZAR APP
 # ─────────────────────────────────────────────────────────────
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app):
+    try:
+        sb = get_supabase()
+        sb.table("traffic_readings").select("id").limit(1).execute()
+        print("Base de datos Supabase inicializada")
+    except Exception as e:
+        print(f"ERROR en startup: {str(e)}")
+    yield
+
 app = FastAPI(
     title="SmartFlow GDL - Microservicio de Ingesta",
     description="Recibe y persiste lecturas de sensores de trafico urbano",
-    version="2.0.0"
+    version="2.0.0",
+    lifespan=lifespan
 )
-
-@app.on_event("startup")
-def startup():
-    try:
-        sb = get_supabase()
-        result = sb.table("traffic_readings").select("id").limit(1).execute()
-        print("Base de datos Supabase inicializada")
-        print(f"Conexion exitosa a Supabase")
-    except Exception as e:
-        print(f"ERROR en startup: {str(e)}")
-
 
 # ─────────────────────────────────────────────────────────────
 # LLAMAR AL MICROSERVICIO DE PREDICCION
