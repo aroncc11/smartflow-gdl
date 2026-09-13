@@ -1,47 +1,33 @@
 # main.py
 # Microservicio de Optimizacion GA - SmartFlow GDL 2026
 # Universidad de Guadalajara / CUCEI
-# Puerto: 8003
+# Puerto: 8003 - Compatible con Python 3.13
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import List
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime, JSON
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from contextlib import asynccontextmanager
 from genetic_algorithm import optimizar_semaforos, INTERSECCIONES
+import os
+from supabase import create_client, Client
 
 # ─────────────────────────────────────────────────────────────
 # CONEXION A SUPABASE
 # ─────────────────────────────────────────────────────────────
-DATABASE_URL = "postgresql+psycopg2://postgres:sMARTFLOWgdl@db.ipcunenaytijdproskxf.supabase.co:5432/postgres"
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://ipcunenaytijdproskxf.supabase.co")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "sb_publishable_tUdmn3h_fIx9zERQweNTyA_HYqThsb4")
 
-engine       = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(bind=engine)
-Base         = declarative_base()
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 # ─────────────────────────────────────────────────────────────
-# TABLA traffic_lights EN SUPABASE
+# LIFESPAN
 # ─────────────────────────────────────────────────────────────
-class TrafficLightDB(Base):
-    __tablename__ = "traffic_lights"
-
-    id               = Column(Integer, primary_key=True, index=True)
-    intersection_id  = Column(String(10), nullable=False)
-    intersection_name= Column(String(100))
-    congestion_level = Column(String(10))
-    verde_default    = Column(Integer, default=45)
-    verde_optimo     = Column(Integer)
-    rojo_optimo      = Column(Integer)
-    amarillo         = Column(Integer, default=3)
-    fitness          = Column(Float)
-    optimized_at     = Column(DateTime, default=datetime.utcnow)
-
-
-def init_db():
-    Base.metadata.create_all(bind=engine)
+@asynccontextmanager
+async def lifespan(app):
+    print("Microservicio de Optimizacion GA listo en :8003")
+    yield
 
 
 # ─────────────────────────────────────────────────────────────
@@ -49,14 +35,10 @@ def init_db():
 # ─────────────────────────────────────────────────────────────
 app = FastAPI(
     title="SmartFlow GDL - Microservicio de Optimizacion GA",
-    description="Optimiza tiempos de semaforo usando Algoritmo Genetico (DEAP)",
-    version="1.0.0"
+    description="Optimiza tiempos de semaforo usando Algoritmo Genetico DEAP",
+    version="2.0.0",
+    lifespan=lifespan
 )
-
-@app.on_event("startup")
-def startup():
-    init_db()
-    print("Microservicio de Optimizacion GA listo en :8003")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -74,22 +56,16 @@ class OptimizacionInput(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────
-# GET / - verificacion rapida
+# GET /
 # ─────────────────────────────────────────────────────────────
 @app.get("/")
 def root():
     return {
-        "servicio":    "optimizacion",
-        "proyecto":    "SmartFlow GDL",
-        "estado":      "activo",
-        "puerto":      8003,
-        "algoritmo":   "Algoritmo Genetico DEAP",
-        "parametros": {
-            "poblacion":     100,
-            "generaciones":  50,
-            "cruzamiento":   0.85,
-            "mutacion":      0.15,
-        }
+        "servicio":  "optimizacion",
+        "proyecto":  "SmartFlow GDL",
+        "estado":    "activo",
+        "algoritmo": "Algoritmo Genetico DEAP",
+        "version":   "2.0.0",
     }
 
 
@@ -99,12 +75,11 @@ def root():
 @app.get("/health")
 def health():
     try:
-        db    = SessionLocal()
-        total = db.query(TrafficLightDB).count()
-        db.close()
+        result = supabase.table("traffic_lights").select("id", count="exact").execute()
+        total  = result.count if result.count else 0
         return {
-            "estado":             "healthy",
-            "timestamp":          datetime.utcnow().isoformat(),
+            "estado":               "healthy",
+            "timestamp":            datetime.utcnow().isoformat(),
             "total_optimizaciones": total,
         }
     except Exception as e:
@@ -112,15 +87,10 @@ def health():
 
 
 # ─────────────────────────────────────────────────────────────
-# POST /optimize - ejecuta el AG y retorna tiempos optimos
+# POST /optimize
 # ─────────────────────────────────────────────────────────────
 @app.post("/optimize", status_code=201)
 def optimizar(datos: OptimizacionInput):
-    """
-    Recibe los niveles de congestion actuales de las 5 intersecciones
-    y ejecuta el Algoritmo Genetico para calcular los tiempos optimos
-    de fase verde en cada semaforo.
-    """
     if len(datos.niveles_congestion) != 5:
         raise HTTPException(
             status_code=400,
@@ -132,37 +102,32 @@ def optimizar(datos: OptimizacionInput):
         if nivel not in niveles_validos:
             raise HTTPException(
                 status_code=400,
-                detail=f"Nivel invalido: {nivel}. Use low, medium o high"
+                detail=f"Nivel invalido: {nivel}"
             )
 
     try:
         print(f"\nEjecutando AG con niveles: {datos.niveles_congestion}")
         inicio = datetime.utcnow()
 
-        # Ejecutar Algoritmo Genetico
         resultado = optimizar_semaforos(datos.niveles_congestion)
 
         duracion = (datetime.utcnow() - inicio).total_seconds()
         print(f"AG completado en {duracion:.2f}s | Fitness: {resultado['fitness']:.2f}")
 
         # Guardar en Supabase
-        db = SessionLocal()
         for int_id, tiempos in resultado["tiempos_optimos"].items():
-            registro = TrafficLightDB(
-                intersection_id   = int_id,
-                intersection_name = tiempos["nombre"],
-                congestion_level  = tiempos["congestion"],
-                verde_default     = tiempos["verde_default"],
-                verde_optimo      = tiempos["verde_optimo"],
-                rojo_optimo       = tiempos["rojo_optimo"],
-                amarillo          = tiempos["amarillo"],
-                fitness           = resultado["fitness"],
-                optimized_at      = datetime.utcnow(),
-            )
-            db.add(registro)
-
-        db.commit()
-        db.close()
+            datos_insert = {
+                "intersection_id":   int_id,
+                "intersection_name": tiempos["nombre"],
+                "congestion_level":  tiempos["congestion"],
+                "verde_default":     tiempos["verde_default"],
+                "verde_optimo":      tiempos["verde_optimo"],
+                "rojo_optimo":       tiempos["rojo_optimo"],
+                "amarillo":          tiempos["amarillo"],
+                "fitness":           resultado["fitness"],
+                "optimized_at":      datetime.utcnow().isoformat(),
+            }
+            supabase.table("traffic_lights").insert(datos_insert).execute()
 
         return {
             "mensaje":         "Optimizacion completada",
@@ -180,41 +145,33 @@ def optimizar(datos: OptimizacionInput):
 
 
 # ─────────────────────────────────────────────────────────────
-# GET /optimize/latest - ultima optimizacion
+# GET /optimize/latest
 # ─────────────────────────────────────────────────────────────
 @app.get("/optimize/latest")
 def ultima_optimizacion():
-    """
-    Devuelve la ultima optimizacion realizada para cada interseccion.
-    Usado por el dashboard para mostrar tiempos actuales.
-    """
-    db = SessionLocal()
+    try:
+        resultado = {}
+        for config in INTERSECCIONES:
+            result = (
+                supabase.table("traffic_lights")
+                .select("*")
+                .eq("intersection_id", config["id"])
+                .order("optimized_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if result.data:
+                resultado[config["id"]] = result.data[0]
 
-    resultado = {}
-    for config in INTERSECCIONES:
-        ultimo = (
-            db.query(TrafficLightDB)
-            .filter(TrafficLightDB.intersection_id == config["id"])
-            .order_by(TrafficLightDB.optimized_at.desc())
-            .first()
-        )
-        if ultimo:
-            resultado[config["id"]] = {
-                "intersection_name": ultimo.intersection_name,
-                "congestion_level":  ultimo.congestion_level,
-                "verde_default":     ultimo.verde_default,
-                "verde_optimo":      ultimo.verde_optimo,
-                "rojo_optimo":       ultimo.rojo_optimo,
-                "amarillo":          ultimo.amarillo,
-                "optimized_at":      str(ultimo.optimized_at),
-            }
+        if not resultado:
+            raise HTTPException(
+                status_code=404,
+                detail="No hay optimizaciones registradas"
+            )
 
-    db.close()
+        return resultado
 
-    if not resultado:
-        raise HTTPException(
-            status_code=404,
-            detail="No hay optimizaciones registradas aun"
-        )
-
-    return resultado
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
