@@ -1,266 +1,185 @@
 # main.py
-# Microservicio de Prediccion IA - SmartFlow GDL 2026
+# Microservicio de Ingesta - SmartFlow GDL 2026
 # Universidad de Guadalajara / CUCEI
-# Puerto: 8002
+# Puerto: 8001
+# Usa cliente oficial de Supabase compatible con Python 3.13
 
-import logging
-from fastapi import FastAPI, HTTPException, Response
-from pydantic import BaseModel
-from typing import Optional
+from fastapi import FastAPI, HTTPException
 from datetime import datetime
-from predictor import Predictor
-from sqlalchemy import create_engine, Column, Integer, Float, String, Boolean, DateTime, BigInteger
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-
+from models import SensorReading
+from database import get_supabase
 import httpx
+import os
 
-logging.basicConfig(level=logging.INFO)
+# ─────────────────────────────────────────────────────────────
+# INICIALIZAR APP
+# ─────────────────────────────────────────────────────────────
+from contextlib import asynccontextmanager
 
-
-def llamar_optimizacion(niveles: list):
-    """
-    Cuando se tienen predicciones de las 5 intersecciones
-    llama al AG para optimizar semaforos.
-    """
+@asynccontextmanager
+async def lifespan(app):
     try:
+        sb = get_supabase()
+        sb.table("traffic_readings").select("id").limit(1).execute()
+        print("Base de datos Supabase inicializada")
+    except Exception as e:
+        print(f"ERROR en startup: {str(e)}")
+    yield
+
+app = FastAPI(
+    title="SmartFlow GDL - Microservicio de Ingesta",
+    description="Recibe y persiste lecturas de sensores de trafico urbano",
+    version="2.0.0",
+    lifespan=lifespan
+)
+
+# ─────────────────────────────────────────────────────────────
+# LLAMAR AL MICROSERVICIO DE PREDICCION
+# ─────────────────────────────────────────────────────────────
+PREDICCION_URL = os.getenv("PREDICCION_URL", "http://localhost:8002")
+
+def llamar_prediccion(lectura_id: int, lectura: SensorReading):
+    try:
+        datos = {
+            "intersection_id": lectura.intersection_id,
+            "reading_id":      lectura_id,
+            "vehicles_count":  lectura.vehicles_count,
+            "avg_speed_kmh":   lectura.avg_speed_kmh,
+            "hour_of_day":     lectura.hour_of_day,
+            "day_of_week":     lectura.day_of_week,
+            "is_peak_hour":    lectura.is_peak_hour,
+            "incident_flag":   lectura.incident_flag,
+            "weather":         lectura.weather,
+            "historical_avg":  lectura.historical_avg,
+        }
         httpx.post(
-            "http://localhost:8003/optimize",
-            json={"niveles_congestion": niveles},
-            timeout=30
+            f"{PREDICCION_URL}/predict",
+            json=datos,
+            timeout=3
         )
     except Exception:
-        logging.exception("Error al llamar al servicio de optimizacion")
+        pass
 
 
 # ─────────────────────────────────────────────────────────────
-# CONEXION A SUPABASE
-# ─────────────────────────────────────────────────────────────
-DATABASE_URL = "postgresql+psycopg2://postgres:sMARTFLOWgdl@db.ipcunenaytijdproskxf.supabase.co:5432/postgres"
-
-
-engine       = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(bind=engine)
-Base         = declarative_base()
-
-# ─────────────────────────────────────────────────────────────
-# TABLA PREDICTIONS EN SUPABASE
-# ─────────────────────────────────────────────────────────────
-class PredictionDB(Base):
-    __tablename__ = "predictions"
-
-    id               = Column(Integer, primary_key=True, index=True)
-    intersection_id  = Column(String(10), nullable=False)
-    reading_id       = Column(BigInteger, nullable=True)
-    congestion_level = Column(String(10))
-    confidence       = Column(Float)
-    prob_low         = Column(Float)
-    prob_medium      = Column(Float)
-    prob_high        = Column(Float)
-    predicted_at     = Column(DateTime, default=datetime.utcnow)
-
-
-def init_db():
-    Base.metadata.create_all(bind=engine)
-
-
-# ─────────────────────────────────────────────────────────────
-# INICIALIZAR APP Y MODELO
-# ─────────────────────────────────────────────────────────────
-app       = FastAPI(
-    title="SmartFlow GDL - Microservicio de Prediccion IA",
-    description="Predice nivel de congestion vehicular usando Random Forest",
-    version="1.0.0"
-)
-predictor = None
-predicciones_actuales = {}
-
-
-@app.on_event("startup")
-def startup():
-    global predictor
-    init_db()
-    predictor = Predictor()
-    logging.info("Microservicio de Prediccion IA listo en :8002")
-
-
-# ─────────────────────────────────────────────────────────────
-# MODELOS PYDANTIC
-# ─────────────────────────────────────────────────────────────
-class LecturaInput(BaseModel):
-    intersection_id: str
-    reading_id:      Optional[int] = None
-    vehicles_count:  int
-    avg_speed_kmh:   float
-    hour_of_day:     int
-    day_of_week:     int
-    is_peak_hour:    bool
-    incident_flag:   bool
-    weather:         str
-    historical_avg:  float
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "intersection_id": "INT-001",
-                "reading_id":      1234,
-                "vehicles_count":  25,
-                "avg_speed_kmh":   14.8,
-                "hour_of_day":     8,
-                "day_of_week":     0,
-                "is_peak_hour":    True,
-                "incident_flag":   False,
-                "weather":         "clear",
-                "historical_avg":  12.5,
-            }
-        }
-
-
-# ─────────────────────────────────────────────────────────────
-# RUTAS
+# GET / - verificacion rapida
 # ─────────────────────────────────────────────────────────────
 @app.get("/")
 def root():
     return {
-        "servicio": "prediccion",
+        "servicio": "ingesta",
         "proyecto": "SmartFlow GDL",
         "estado":   "activo",
-        "puerto":   8002,
-        "modelo":   "Random Forest",
+        "version":  "2.0.0",
     }
 
 
-@app.get("/favicon.ico")
-def favicon():
-    return Response(status_code=204)
-
-
+# ─────────────────────────────────────────────────────────────
+# GET /health - estado detallado
+# ─────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
     try:
-        db    = SessionLocal()
-        total = db.query(PredictionDB).count()
-        db.close()
+        sb     = get_supabase()
+        result = sb.table("traffic_readings").select("id", count="exact").execute()
+        total  = result.count if result.count else 0
         return {
-            "estado":           "healthy",
-            "timestamp":        datetime.utcnow().isoformat(),
-            "modelo":           "Random Forest cargado",
-            "total_predicciones": total,
+            "estado":         "healthy",
+            "timestamp":      datetime.utcnow().isoformat(),
+            "total_lecturas": total,
+            "base_de_datos":  "Supabase conectada",
         }
     except Exception as e:
-        logging.exception("Error en /health")
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(
+            status_code=503,
+            detail=f"Base de datos no disponible: {str(e)}"
+        )
 
 
-@app.post("/predict", status_code=201)
-def predecir(lectura: LecturaInput):
-    """
-    Recibe datos de una lectura de sensor y predice
-    el nivel de congestion usando el modelo Random Forest.
-    """
+# ─────────────────────────────────────────────────────────────
+# POST /readings - recibe datos del sensor
+# ─────────────────────────────────────────────────────────────
+@app.post("/readings", status_code=201)
+def recibir_lectura(lectura: SensorReading):
     try:
-        # Realizar prediccion
-        resultado = predictor.predecir(lectura.dict())
+        sb = get_supabase()
 
-        # Guardar prediccion en Supabase
-        db = SessionLocal()
-        registro = PredictionDB(
-            intersection_id  = lectura.intersection_id,
-            reading_id       = lectura.reading_id,
-            congestion_level = resultado["congestion_level"],
-            confidence       = resultado["confidence"],
-            prob_low         = resultado["probabilities"].get("low", 0),
-            prob_medium      = resultado["probabilities"].get("medium", 0),
-            prob_high        = resultado["probabilities"].get("high", 0),
-            predicted_at     = datetime.utcnow(),
-        )
-        db.add(registro)
-        db.commit()
-        db.refresh(registro)
-        db.close()
+        datos = {
+            "intersection_id":   lectura.intersection_id,
+            "intersection_name": lectura.intersection_name,
+            "lat":               lectura.lat,
+            "lon":               lectura.lon,
+            "timestamp":         lectura.timestamp,
+            "vehicles_count":    lectura.vehicles_count,
+            "avg_speed_kmh":     lectura.avg_speed_kmh,
+            "congestion_level":  lectura.congestion_level,
+            "incident_flag":     lectura.incident_flag,
+            "incident_detail":   lectura.incident_detail,
+            "weather":           lectura.weather,
+            "hour_of_day":       lectura.hour_of_day,
+            "day_of_week":       lectura.day_of_week,
+            "is_peak_hour":      lectura.is_peak_hour,
+            "historical_avg":    lectura.historical_avg,
+        }
 
-        logging.info(
-            "[%s] Prediccion #%s - %s | Confianza: %.2f%%",
-            lectura.intersection_id,
-            registro.id,
-            resultado["congestion_level"].upper(),
-            resultado["confidence"] * 100,
-        )
+        result = sb.table("traffic_readings").insert(datos).execute()
+        registro_id = result.data[0]["id"] if result.data else None
 
-        # Guardar prediccion actual
-        predicciones_actuales[lectura.intersection_id] = resultado["congestion_level"]
+        print(f"[{lectura.intersection_id}] Lectura #{registro_id} guardada "
+              f"- {lectura.congestion_level.upper()} "
+              f"| {lectura.avg_speed_kmh} km/h")
 
-        # Si tenemos las 5 intersecciones llamar al optimizador
-        if len(predicciones_actuales) == 5:
-            niveles = [
-                predicciones_actuales.get(f"INT-00{i}", "medium")
-                for i in range(1, 6)
-            ]
-            llamar_optimizacion(niveles)
+        # Llamar al microservicio de prediccion
+        if registro_id:
+            llamar_prediccion(registro_id, lectura)
 
         return {
-            "id":               registro.id,
-            "intersection_id":  lectura.intersection_id,
-            "congestion_level": resultado["congestion_level"],
-            "confidence":       resultado["confidence"],
-            "probabilities":    resultado["probabilities"],
-            "predicted_at":     registro.predicted_at.isoformat(),
+            "mensaje":         "Lectura guardada en Supabase",
+            "id":              registro_id,
+            "intersection_id": lectura.intersection_id,
+            "congestion":      lectura.congestion_level,
+            "timestamp":       lectura.timestamp,
         }
 
     except Exception as e:
-        logging.exception("Error en /predict")
         raise HTTPException(
             status_code=500,
-            detail=f"Error en prediccion: {str(e)}"
+            detail=f"Error guardando lectura: {str(e)}"
         )
 
 
-@app.get("/predict/{intersection_id}")
-def obtener_predicciones(intersection_id: str, limite: int = 10):
-    """
-    Devuelve las ultimas N predicciones de una interseccion.
-    Util para el dashboard y analisis de tendencias.
-    """
+# ─────────────────────────────────────────────────────────────
+# GET /readings/{intersection_id} - ultimas lecturas
+# ─────────────────────────────────────────────────────────────
+@app.get("/readings/{intersection_id}")
+def obtener_lecturas(intersection_id: str, limite: int = 10):
     try:
-        db = SessionLocal()
-        predicciones = (
-            db.query(PredictionDB)
-            .filter(PredictionDB.intersection_id == intersection_id)
-            .order_by(PredictionDB.predicted_at.desc())
+        sb = get_supabase()
+        result = (
+            sb.table("traffic_readings")
+            .select("id, timestamp, vehicles_count, avg_speed_kmh, congestion_level, incident_flag, weather")
+            .eq("intersection_id", intersection_id)
+            .order("created_at", desc=True)
             .limit(limite)
-            .all()
+            .execute()
         )
-        db.close()
 
-        if not predicciones:
+        if not result.data:
             raise HTTPException(
                 status_code=404,
-                detail=f"No hay predicciones para {intersection_id}"
+                detail=f"No hay lecturas para {intersection_id}"
             )
 
         return {
             "intersection_id": intersection_id,
-            "total":           len(predicciones),
-            "predicciones": [
-                {
-                    "id":               p.id,
-                    "congestion_level": p.congestion_level,
-                    "confidence":       p.confidence,
-                    "prob_low":         p.prob_low,
-                    "prob_medium":      p.prob_medium,
-                    "prob_high":        p.prob_high,
-                    "predicted_at":     str(p.predicted_at),
-                }
-                for p in predicciones
-            ]
+            "total":           len(result.data),
+            "lecturas":        result.data,
         }
+
     except HTTPException:
         raise
     except Exception as e:
-        logging.exception("Error en /predict/{intersection_id}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8002, reload=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error consultando lecturas: {str(e)}"
+        )
