@@ -1,29 +1,29 @@
 # sensor_base.py
 # Clase base para todos los sensores de trafico urbano
 # SmartFlow GDL 2026 - Universidad de Guadalajara / CUCEI
-#
-# Parametros calibrados con:
-#   - INEGI: Estadisticas de vehiculos en circulacion 2024 (Jalisco)
-#   - SEMOVI / datos.jalisco.gob.mx: MiBici, GTFS MiTransporte
-#   - Jalisco Como Vamos: Reporte Moverse en GDL 2022
-#   - TomTom Traffic API: velocidades reales por interseccion
-#   - Coordenadas verificadas en Google Maps Street View
 
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import random
 import schedule
 import time
 import requests
+import os
 
 # ─────────────────────────────────────────────────────────────
 # URL DEL MICROSERVICIO DE INGESTA
 # ─────────────────────────────────────────────────────────────
-INGESTA_URL = "https://smartflow-gdl-production.up.railway.app/readings"
+INGESTA_URL = os.getenv(
+    "INGESTA_URL",
+    "https://smartflow-gdl-production.up.railway.app/readings"
+)
+
+# ─────────────────────────────────────────────────────────────
+# ZONA HORARIA DE GUADALAJARA (UTC-6)
+# ─────────────────────────────────────────────────────────────
+GDL_TZ = timezone(timedelta(hours=-6))
 
 # ─────────────────────────────────────────────────────────────
 # FACTORES HORARIOS - curva bimodal
-# Fuente: MiBici SEMOVI (pico tarde 19:00)
-#         Jalisco Como Vamos 2022 (pico manana 7-9am)
 # ─────────────────────────────────────────────────────────────
 FACTORES_HORA = {
     0: 0.05,  1: 0.04,  2: 0.03,  3: 0.03,
@@ -34,42 +34,21 @@ FACTORES_HORA = {
    20: 0.80, 21: 0.55, 22: 0.35, 23: 0.15,
 }
 
-# ─────────────────────────────────────────────────────────────
-# FACTORES POR DIA DE SEMANA
-# Fuente: HCM (Highway Capacity Manual)
-# 0=Lunes, 6=Domingo
-# ─────────────────────────────────────────────────────────────
 FACTORES_DIA = {
-    0: 0.95,  # Lunes
-    1: 1.00,  # Martes
-    2: 1.00,  # Miercoles
-    3: 0.98,  # Jueves
-    4: 0.95,  # Viernes
-    5: 0.80,  # Sabado
-    6: 0.60,  # Domingo
+    0: 0.95, 1: 1.00, 2: 1.00,
+    3: 0.98, 4: 0.95, 5: 0.80, 6: 0.60,
 }
 
-# ─────────────────────────────────────────────────────────────
-# FACTORES CLIMATICOS
-# Fuente: SMN - temporada de lluvias GDL mayo-octubre
-# ─────────────────────────────────────────────────────────────
 FACTORES_VELOCIDAD_CLIMA = {
-    "clear":      1.00,
-    "cloudy":     0.95,
-    "rain":       0.75,
-    "heavy_rain": 0.55,
+    "clear": 1.00, "cloudy": 0.95,
+    "rain":  0.75, "heavy_rain": 0.55,
 }
 
 FACTORES_VOLUMEN_CLIMA = {
-    "clear":      1.00,
-    "cloudy":     1.00,
-    "rain":       0.85,
-    "heavy_rain": 0.65,
+    "clear": 1.00, "cloudy": 1.00,
+    "rain":  0.85, "heavy_rain": 0.65,
 }
 
-# ─────────────────────────────────────────────────────────────
-# TIPOS DE INCIDENTE
-# ─────────────────────────────────────────────────────────────
 TIPOS_INCIDENTE = [
     "Accidente vehicular",
     "Cierre vial por obra",
@@ -79,36 +58,17 @@ TIPOS_INCIDENTE = [
 ]
 
 
-# ─────────────────────────────────────────────────────────────
-# CLASE BASE
-# ─────────────────────────────────────────────────────────────
 class SensorBase:
-    """
-    Clase base para todos los sensores de trafico.
-    Cada interseccion crea una instancia pasando su config.
-
-    Config esperada:
-        id              - identificador (ej. INT-001)
-        nombre          - nombre de la interseccion
-        lat             - latitud verificada en Google Maps
-        lon             - longitud verificada en Google Maps
-        volumen_pico    - vehiculos/hora en hora pico
-        volumen_normal  - vehiculos/hora en hora normal
-        velocidad_libre - km/h sin congestion (calibrado con TomTom)
-    """
 
     def __init__(self, config: dict):
         self.config        = config
         self._incidente    = {"activo": False, "detalle": None}
         self._clima_actual = self._generar_clima()
-        self._hora_clima   = datetime.now().hour
-        print(f"Sensor inicializado: [{config['id']}] {config['nombre']}")
-        print(f"   Coordenadas: ({config['lat']}, {config['lon']})")
-        print(f"   Clima inicial: {self._clima_actual}")
+        self._hora_clima   = datetime.now(GDL_TZ).hour
+        print(f"Sensor [{config['id']}] {config['nombre']} iniciado")
 
-    # ── Clima - cambia solo una vez por hora ────────────────
     def _generar_clima(self) -> str:
-        mes = datetime.now().month
+        mes = datetime.now(GDL_TZ).month
         temporada_lluvias = mes in range(5, 11)
         if temporada_lluvias:
             return random.choices(
@@ -122,14 +82,12 @@ class SensorBase:
             )[0]
 
     def _simular_clima(self) -> str:
-        hora_actual = datetime.now().hour
+        hora_actual = datetime.now(GDL_TZ).hour
         if self._hora_clima != hora_actual:
             self._clima_actual = self._generar_clima()
             self._hora_clima   = hora_actual
-            print(f"   [{self.config['id']}] Clima actualizado: {self._clima_actual}")
         return self._clima_actual
 
-    # ── Incidente ───────────────────────────────────────────
     def _simular_incidente(self, clima: str) -> tuple:
         prob = 0.05 if clima == "heavy_rain" else 0.02
         if self._incidente["activo"]:
@@ -142,9 +100,8 @@ class SensorBase:
                 self._incidente["detalle"] = random.choice(TIPOS_INCIDENTE)
         return self._incidente["activo"], self._incidente["detalle"]
 
-    # ── Volumen ─────────────────────────────────────────────
     def _calcular_volumen(self, clima: str, incidente: bool) -> int:
-        now  = datetime.now()
+        now  = datetime.now(GDL_TZ)
         hora = now.hour
         dia  = now.weekday()
 
@@ -158,13 +115,10 @@ class SensorBase:
 
         vehiculos = (base * factor_hora * factor_dia *
                      factor_clima * factor_inciden) / 120
-
-        # Ruido gaussiano +-15% para variabilidad realista
         vehiculos = vehiculos * random.gauss(1.0, 0.15)
 
         return max(0, round(vehiculos))
 
-    # ── Velocidad (Greenshields) ────────────────────────────
     def _calcular_velocidad(self, vehiculos: int, clima: str) -> float:
         capacidad_30s   = self.config["volumen_pico"] / 120
         ratio           = min(vehiculos / max(capacidad_30s, 1), 1.0)
@@ -172,53 +126,24 @@ class SensorBase:
         factor_clima    = FACTORES_VELOCIDAD_CLIMA[clima]
 
         velocidad = velocidad_libre * (1 - 0.85 * ratio) * factor_clima
-
-        # Ruido gaussiano +-15% para variabilidad realista
         velocidad = velocidad * random.gauss(1.0, 0.15)
 
         return max(5.0, round(velocidad, 1))
 
-    # ── Congestion con zonas grises ─────────────────────────
     def _calcular_congestion(self, velocidad: float) -> str:
-        """
-        Congestion con probabilidades en zonas grises.
-        Simula la ambiguedad real del trafico urbano.
-        Evita sobreentrenamiento del modelo de IA.
-        """
-        # Zona claramente libre
         if velocidad > 40:
-            return random.choices(
-                ["low", "medium"],
-                weights=[0.93, 0.07]
-            )[0]
-        # Zona libre con algo de incertidumbre
+            return random.choices(["low", "medium"], weights=[0.93, 0.07])[0]
         elif velocidad > 35:
-            return random.choices(
-                ["low", "medium"],
-                weights=[0.80, 0.20]
-            )[0]
-        # Zona gris - puede ser cualquiera
+            return random.choices(["low", "medium"], weights=[0.80, 0.20])[0]
         elif velocidad > 20:
-            return random.choices(
-                ["low", "medium", "high"],
-                weights=[0.10, 0.78, 0.12]
-            )[0]
-        # Zona media-alta
+            return random.choices(["low", "medium", "high"], weights=[0.10, 0.78, 0.12])[0]
         elif velocidad > 15:
-            return random.choices(
-                ["medium", "high"],
-                weights=[0.75, 0.25]
-            )[0]
-        # Zona claramente congestionada
+            return random.choices(["medium", "high"], weights=[0.75, 0.25])[0]
         else:
-            return random.choices(
-                ["medium", "high"],
-                weights=[0.12, 0.88]
-            )[0]
+            return random.choices(["medium", "high"], weights=[0.12, 0.88])[0]
 
-    # ── Lectura completa ────────────────────────────────────
     def generate_reading(self) -> dict:
-        now     = datetime.now()
+        now     = datetime.now(GDL_TZ)
         clima   = self._simular_clima()
         inciden, detalle = self._simular_incidente(clima)
 
@@ -248,64 +173,19 @@ class SensorBase:
             ),
         }
 
-    # ── Enviar al microservicio ─────────────────────────────
     def _enviar(self, lectura: dict):
         try:
             response = requests.post(INGESTA_URL, json=lectura, timeout=5)
-            if response.status_code == 201:
-                print(f"[{lectura['intersection_id']}] Enviado - "
-                      f"{lectura['congestion_level'].upper()} "
-                      f"| {lectura['avg_speed_kmh']} km/h "
-                      f"| {lectura['vehicles_count']} veh/30s")
-            else:
-                print(f"[{lectura['intersection_id']}] "
-                      f"Error {response.status_code}: {response.text}")
-        except requests.exceptions.ConnectionError:
-            print(f"[{lectura['intersection_id']}] Sin microservicio - "
-                  f"{lectura['congestion_level'].upper()} "
-                  f"| {lectura['avg_speed_kmh']} km/h "
-                  f"| {lectura['vehicles_count']} veh/30s")
-            if lectura["incident_flag"]:
-                print(f"   INCIDENTE: {lectura['incident_detail']}")
-        except requests.exceptions.Timeout:
-            print(f"[{lectura['intersection_id']}] Timeout")
+            if response.status_code != 201:
+                print(f"[{lectura['intersection_id']}] Error {response.status_code}")
+        except Exception as e:
+            print(f"[{lectura['intersection_id']}] Error: {str(e)}")
 
-    # ── Imprimir en consola ─────────────────────────────────
-    def _imprimir(self, lectura: dict):
-        nivel = {
-            "low":    "[LOW]",
-            "medium": "[MEDIUM]",
-            "high":   "[HIGH]"
-        }
-        clima = {
-            "clear":      "[CLEAR]",
-            "cloudy":     "[CLOUDY]",
-            "rain":       "[RAIN]",
-            "heavy_rain": "[HEAVY RAIN]"
-        }
-        print(f"\n[{lectura['timestamp'][:19]}] "
-              f"{lectura['intersection_id']} - {lectura['intersection_name']}")
-        print(f"  Vehiculos:  {lectura['vehicles_count']} veh/30s")
-        print(f"  Velocidad:  {lectura['avg_speed_kmh']} km/h")
-        print(f"  Congestion: {nivel[lectura['congestion_level']]} "
-              f"{lectura['congestion_level'].upper()}")
-        print(f"  Clima:      {clima[lectura['weather']]} {lectura['weather']}")
-        print(f"  Hora pico:  {'Si' if lectura['is_peak_hour'] else 'No'}")
-        if lectura["incident_flag"]:
-            print(f"  INCIDENTE: {lectura['incident_detail']}")
-
-    # ── Loop principal ──────────────────────────────────────
     def ejecutar(self):
-        print("\n" + "=" * 55)
-        print(f"  Sensor: {self.config['nombre']}")
-        print(f"  ID:     {self.config['id']}")
-        print(f"  Coords: ({self.config['lat']}, {self.config['lon']})")
-        print(f"  Lectura cada 30s - Ctrl+C para detener")
-        print("=" * 55)
+        print(f"Sensor {self.config['id']} enviando a {INGESTA_URL}")
 
         def ciclo():
             lectura = self.generate_reading()
-            self._imprimir(lectura)
             self._enviar(lectura)
 
         ciclo()
