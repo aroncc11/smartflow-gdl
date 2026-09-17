@@ -200,4 +200,9 @@ def obtener_predicciones(intersection_id: str, limite: int = 10):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+    print(f"ERROR: {traceback.format_exc()}")
+    raise HTTPException(
+        status_code=500,
+        detail=f"Error en prediccion: {str(e)}"
+    )
