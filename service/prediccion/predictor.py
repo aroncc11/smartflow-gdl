@@ -5,6 +5,7 @@
 import joblib
 import numpy as np
 import os
+import pandas as pd
 
 # ─────────────────────────────────────────────────────────────
 # MAPEO DE CLIMA A NUMERO
@@ -59,16 +60,18 @@ class Predictor:
             probabilities    — probabilidades por clase
         """
         # Construir vector de features
-        features = np.array([[
-            lectura["vehicles_count"],
-            lectura["avg_speed_kmh"],
-            lectura["hour_of_day"],
-            lectura["day_of_week"],
-            int(lectura["is_peak_hour"]),
-            int(lectura["incident_flag"]),
-            CLIMA_MAP.get(lectura["weather"], 0),
-            lectura["historical_avg"],
-        ]])
+      
+
+        features = pd.DataFrame([{
+            "vehicles_count":  lectura["vehicles_count"],
+            "avg_speed_kmh":   lectura["avg_speed_kmh"],
+            "hour_of_day":     lectura["hour_of_day"],
+            "day_of_week":     lectura["day_of_week"],
+            "is_peak_hour":    int(lectura["is_peak_hour"]),
+            "incident_flag":   int(lectura["incident_flag"]),
+            "weather_encoded": CLIMA_MAP.get(lectura["weather"], 0),
+            "historical_avg":  lectura["historical_avg"],
+        }])
 
         # Prediccion
         prediccion   = self.modelo.predict(features)[0]
