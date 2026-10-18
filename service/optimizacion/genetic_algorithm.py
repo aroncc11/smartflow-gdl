@@ -4,7 +4,9 @@
 #
 # Usa la libreria DEAP para evolucionar soluciones optimas
 # Cromosoma: [t_verde_INT001, t_verde_INT002, t_verde_INT003, t_verde_INT004, t_verde_INT005]
-# Objetivo: minimizar tiempo de espera ponderado por volumen vehicular
+# Objetivo: minimizar tiempo de espera ponderado por volumen vehicular,
+# sujeto a un presupuesto de verde COMPARTIDO entre las 5 intersecciones
+# (ver nota en calcular_fitness).
 
 import random
 from deap import base, creator, tools, algorithms
@@ -36,10 +38,30 @@ PROB_MUTACION    = 0.15
 
 N_INTERSECCIONES = len(INTERSECCIONES)
 
+# ─────────────────────────────────────────────────────────────
+# PRESUPUESTO COMPARTIDO DE VERDE (NUEVO)
+# ─────────────────────────────────────────────────────────────
+# Antes, cada interseccion maximizaba su propio verde sin limite real,
+# asi que el AG siempre convergia a asignarle 120s a las 5 sin importar
+# la congestion de entrada (resultado constante de 56.8% en 30 corridas
+# reales de prueba, con desviacion estandar = 0).
+#
+# En una red de semaforos real existe un limite practico de cuanto verde
+# puede repartirse simultaneamente entre intersecciones (coordinacion de
+# onda verde, capacidad de la red). Modelamos esto como un presupuesto
+# total de verde compartido entre las 5 intersecciones: el promedio de
+# verde por interseccion no puede exceder 70s (reduccion de ~42% respecto
+# al maximo individual de 120s), forzando al AG a repartir ese presupuesto
+# segun la congestion relativa de cada una en lugar de maximizar todas por
+# igual.
+PRESUPUESTO_VERDE_PROMEDIO = 70   # segundos promedio por interseccion
+PENALIZACION_EXCESO = 5000        # peso de la penalizacion por exceder el presupuesto
+
 
 # ─────────────────────────────────────────────────────────────
 # FUNCION DE FITNESS
-# Minimiza el tiempo promedio de espera ponderado por volumen
+# Minimiza el tiempo promedio de espera ponderado por volumen,
+# sujeto al presupuesto de verde compartido.
 # ─────────────────────────────────────────────────────────────
 def calcular_fitness(individuo, niveles_congestion: list) -> tuple:
     """
@@ -60,6 +82,7 @@ def calcular_fitness(individuo, niveles_congestion: list) -> tuple:
 
     tiempo_espera_total = 0
     volumen_total       = 0
+    suma_verde          = 0
 
     for i, config in enumerate(INTERSECCIONES):
         t_verde  = individuo[i]
@@ -72,9 +95,17 @@ def calcular_fitness(individuo, niveles_congestion: list) -> tuple:
 
         tiempo_espera_total += espera * volumen
         volumen_total       += volumen
+        suma_verde          += t_verde
 
     # Promedio ponderado por volumen
     fitness = tiempo_espera_total / max(volumen_total, 1)
+
+    # Penalizacion por exceder el presupuesto compartido de verde.
+    # Esto es lo que obliga al AG a repartir el verde segun congestion
+    # relativa, en vez de maximizar cada interseccion por separado.
+    presupuesto_total = PRESUPUESTO_VERDE_PROMEDIO * N_INTERSECCIONES
+    exceso = max(0, suma_verde - presupuesto_total)
+    fitness += PENALIZACION_EXCESO * (exceso ** 2)
 
     return (fitness,)
 
@@ -188,7 +219,7 @@ def optimizar_semaforos(niveles_congestion: list) -> dict:
             {"gen": i, "min": round(r["min"], 2), "avg": round(r["avg"], 2)}
              for i, r in enumerate(log)
         ]
-        
+
     }
 
     for i, config in enumerate(INTERSECCIONES):
