@@ -3,7 +3,7 @@
 # Universidad de Guadalajara / CUCEI
 # Puerto: 8003 - Compatible con Python 3.13
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import List
 from datetime import datetime
@@ -15,8 +15,10 @@ from supabase import create_client, Client
 # ─────────────────────────────────────────────────────────────
 # CONEXION A SUPABASE
 # ─────────────────────────────────────────────────────────────
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://ipcunenaytijdproskxf.supabase.co")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "sb_publishable_tUdmn3h_fIx9zERQweNTyA_HYqThsb4")
+# Sin valor por defecto: la clave real ya no vive en el codigo fuente.
+# Deben estar configuradas como variables de entorno en Railway.
+SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -87,10 +89,41 @@ def health():
 
 
 # ─────────────────────────────────────────────────────────────
+# Guardado en Supabase (en segundo plano, NO bloquea la respuesta)
+# ─────────────────────────────────────────────────────────────
+def _guardar_tiempos_async(tiempos_optimos: dict, fitness: float):
+    """
+    Guarda el resultado de la optimizacion en Supabase DESPUES de que la
+    respuesta ya se envio al cliente. El Algoritmo Genetico ya termino su
+    trabajo (tipicamente en milisegundos); este guardado historico no debe
+    determinar si la peticion se considera exitosa, ni hacer esperar a
+    quien pidio la optimizacion por un viaje de red hacia la base de datos.
+    """
+    optimized_at = datetime.utcnow().isoformat()
+    for int_id, tiempos in tiempos_optimos.items():
+        datos_insert = {
+            "intersection_id":   int_id,
+            "intersection_name": tiempos["nombre"],
+            "congestion_level":  tiempos["congestion"],
+            "verde_default":     tiempos["verde_default"],
+            "verde_optimo":      tiempos["verde_optimo"],
+            "rojo_optimo":       tiempos["rojo_optimo"],
+            "amarillo":          tiempos["amarillo"],
+            "fitness":           fitness,
+            "optimized_at":      optimized_at,
+        }
+        try:
+            supabase.table("traffic_lights").insert(datos_insert).execute()
+        except Exception as e:
+            # El cliente ya recibio su resultado; solo se registra el aviso.
+            print(f"[{int_id}] Aviso: fallo el guardado en Supabase en segundo plano: {e}")
+
+
+# ─────────────────────────────────────────────────────────────
 # POST /optimize
 # ─────────────────────────────────────────────────────────────
 @app.post("/optimize", status_code=201)
-def optimizar(datos: OptimizacionInput):
+def optimizar(datos: OptimizacionInput, background_tasks: BackgroundTasks):
     if len(datos.niveles_congestion) != 5:
         raise HTTPException(
             status_code=400,
@@ -114,20 +147,12 @@ def optimizar(datos: OptimizacionInput):
         duracion = (datetime.utcnow() - inicio).total_seconds()
         print(f"AG completado en {duracion:.2f}s | Fitness: {resultado['fitness']:.2f}")
 
-        # Guardar en Supabase
-        for int_id, tiempos in resultado["tiempos_optimos"].items():
-            datos_insert = {
-                "intersection_id":   int_id,
-                "intersection_name": tiempos["nombre"],
-                "congestion_level":  tiempos["congestion"],
-                "verde_default":     tiempos["verde_default"],
-                "verde_optimo":      tiempos["verde_optimo"],
-                "rojo_optimo":       tiempos["rojo_optimo"],
-                "amarillo":          tiempos["amarillo"],
-                "fitness":           resultado["fitness"],
-                "optimized_at":      datetime.utcnow().isoformat(),
-            }
-            supabase.table("traffic_lights").insert(datos_insert).execute()
+        # El guardado en Supabase se hace DESPUES de responder al cliente.
+        background_tasks.add_task(
+            _guardar_tiempos_async,
+            resultado["tiempos_optimos"],
+            resultado["fitness"],
+        )
 
         return {
             "mensaje":         "Optimizacion completada",
