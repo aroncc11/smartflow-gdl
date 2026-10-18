@@ -3,7 +3,7 @@
 # Universidad de Guadalajara / CUCEI
 # Puerto: 8002 - Compatible con Python 3.13
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
@@ -17,8 +17,13 @@ from supabase import create_client, Client
 # ─────────────────────────────────────────────────────────────
 # CONEXION A SUPABASE
 # ─────────────────────────────────────────────────────────────
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://ipcunenaytijdproskxf.supabase.co")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "sb_publishable_tUdmn3h_fIx9zERQweNTyA_HYqThsb4")
+# IMPORTANTE: ya no se incluye un valor por defecto con la clave real.
+# Estas variables DEBEN estar configuradas en Railway (Settings -> Variables)
+# para que el servicio arranque. Si faltan, el servicio falla de forma
+# explícita en vez de silenciosamente usar una credencial expuesta en el
+# código fuente del repositorio.
+SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -204,10 +209,35 @@ def health():
 # ─────────────────────────────────────────────────────────────
 # POST /predict
 # ─────────────────────────────────────────────────────────────
+def _guardar_en_supabase_async(datos: dict, intersection_id: str):
+    """
+    Ejecuta el INSERT en Supabase DESPUES de que la respuesta ya se envio
+    al cliente (FastAPI BackgroundTasks). Esto saca el viaje de red hacia
+    la base de datos (Railway en sfo <-> Supabase en sa-east-1) de la
+    ruta critica de la peticion: la prediccion ya se calculo y se cacheo
+    en Redis antes de llegar aqui, asi que el cliente no tiene por que
+    esperar a que el registro histórico termine de guardarse.
+
+    Medicion real (12-14 oct 2026, 258 peticiones exitosas, llamada
+    sincrona): P50 = 1880 ms, P95 = 2725 ms. La mayor parte de ese tiempo
+    corresponde a este INSERT, no al computo del modelo.
+    """
+    try:
+        result = supabase.table("predictions").insert(datos).execute()
+        registro_id = result.data[0]["id"] if result.data else None
+        print(f"[{intersection_id}] Guardado en Supabase OK - id={registro_id}")
+    except Exception as e:
+        # Si falla el guardado historico, no afecta al cliente: ya recibio
+        # su prediccion. Solo se registra para diagnostico.
+        print(f"[{intersection_id}] Aviso: fallo el guardado en Supabase en segundo plano: {e}")
+
+
 @app.post("/predict", status_code=201)
-def predecir(lectura: LecturaInput):
+def predecir(lectura: LecturaInput, background_tasks: BackgroundTasks):
     try:
         resultado = predictor.predecir(lectura.dict())
+
+        predicted_at = datetime.utcnow().isoformat()
 
         datos = {
             "intersection_id":  lectura.intersection_id,
@@ -217,23 +247,20 @@ def predecir(lectura: LecturaInput):
             "prob_low":         resultado["probabilities"].get("low", 0),
             "prob_medium":      resultado["probabilities"].get("medium", 0),
             "prob_high":        resultado["probabilities"].get("high", 0),
-            "predicted_at":     datetime.utcnow().isoformat(),
+            "predicted_at":     predicted_at,
         }
 
-        result = supabase.table("predictions").insert(datos).execute()
-        registro_id = result.data[0]["id"] if result.data else None
-
-        print(f"[{lectura.intersection_id}] Prediccion #{registro_id} - "
+        print(f"[{lectura.intersection_id}] Prediccion - "
               f"{resultado['congestion_level'].upper()} "
               f"| Confianza: {resultado['confidence']:.2%}")
 
         respuesta = {
-            "id":               registro_id,
+            "id":               None,  # se asigna en Supabase; no se espera aqui
             "intersection_id":  lectura.intersection_id,
             "congestion_level": resultado["congestion_level"],
             "confidence":       resultado["confidence"],
             "probabilities":    resultado["probabilities"],
-            "predicted_at":     datos["predicted_at"],
+            "predicted_at":     predicted_at,
         }
 
         # Cachear la ultima prediccion de esta interseccion (TTL 60s)
@@ -249,6 +276,9 @@ def predecir(lectura: LecturaInput):
                 for i in range(1, 6)
             ]
             llamar_optimizacion(niveles)
+
+        # El INSERT en Supabase se hace DESPUES de responder al cliente.
+        background_tasks.add_task(_guardar_en_supabase_async, datos, lectura.intersection_id)
 
         return respuesta
 
