@@ -3,19 +3,25 @@
 # SmartFlow GDL 2026 — Universidad de Guadalajara / CUCEI
 #
 # Instrucciones:
-# 1. Pegar tu API Key de TomTom en la variable API_KEY
+# 1. export TOMTOM_API_KEY=tu_clave_aqui
 # 2. Correr: python tomtom_calibrar.py
 # 3. Si alguna intersección marca ajustar velocidad_libre en sensor_base.py
 
-import requests 
+import os
+import requests
 import json
 from datetime import datetime
 from sensor_base import SensorBase
 
 # ─────────────────────────────────────────────────────────────
-# PEGA TU API KEY DE TOMTOM AQUÍ
+# API KEY DE TOMTOM — nunca hardcodeada en el código.
+# Define la variable de entorno TOMTOM_API_KEY antes de correr este
+# script (ej. `export TOMTOM_API_KEY=tu_clave_aqui`).
+# La clave anterior quedó expuesta en el repo público y debe
+# considerarse comprometida: revócala/regenérala en el portal de
+# TomTom antes de usar una nueva aquí.
 # ─────────────────────────────────────────────────────────────
-API_KEY = "mYRWE4xG0uEDO85EQPMUeDb9C634u5dU"
+API_KEY = os.getenv("TOMTOM_API_KEY", "")
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURACIÓN DE INTERSECCIONES
@@ -203,11 +209,9 @@ def aplicar_ajustes():
     print("\nAjustes aplicados. Vuelve a correr tomtom_calibrar.py para verificar.")
 
 if __name__ == "__main__":
-    if API_KEY == "mYRWE4xG0uEDO85EQPMUeDb9C634u5dU":
-        print("ERROR: Debes pegar tu API Key de TomTom en la variable API_KEY")
-       
-    
-else:
+    if not API_KEY:
+        print("ERROR: Define la variable de entorno TOMTOM_API_KEY antes de correr este script.")
+    else:
         comparar()
         print("\nAplicando ajustes automaticamente...")
         aplicar_ajustes()
