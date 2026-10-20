@@ -4,6 +4,7 @@
 # Puerto: 8002 - Compatible con Python 3.13
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
@@ -127,6 +128,17 @@ app = FastAPI(
     description="Predice nivel de congestion vehicular usando Random Forest",
     version="2.0.0",
     lifespan=lifespan
+)
+
+# CORS: permite que el dashboard (Next.js, origen distinto) mida la latencia
+# real de este servicio desde el navegador del usuario, haciendo ping a
+# /health con fetch(). Solo expone endpoints de lectura/salud, nada sensible,
+# asi que no representa un riesgo habilitarlo para cualquier origen.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
 )
 
 
