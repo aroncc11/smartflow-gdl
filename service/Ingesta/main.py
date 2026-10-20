@@ -4,7 +4,7 @@
 # Puerto: 8001
 # Usa cliente oficial de Supabase compatible con Python 3.13
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from datetime import datetime
 from models import SensorReading
 from database import get_supabase
@@ -99,8 +99,21 @@ def health():
 # ─────────────────────────────────────────────────────────────
 # POST /readings - recibe datos del sensor
 # ─────────────────────────────────────────────────────────────
-@app.post("/readings", status_code=201)
-def recibir_lectura(lectura: SensorReading):
+def _guardar_y_notificar_async(lectura: SensorReading):
+    """
+    Ejecuta el INSERT en Supabase y la llamada al microservicio de
+    prediccion DESPUES de responder al sensor (FastAPI BackgroundTasks).
+
+    Antes esta funcion corria de forma sincrona dentro de la peticion:
+    el sensor esperaba el viaje de red completo Railway (sfo) <-> Supabase
+    (sa-east-1) para el INSERT, y ademas esperaba la respuesta del
+    microservicio de prediccion (que a su vez puede llamar al de
+    optimizacion) antes de recibir su propio ack. Esa cadena sincrona de
+    tres servicios es la causa de que /readings midiera P50 ~600ms y
+    P95 de hasta 1-3s en produccion, peor que prediccion u optimizacion
+    por separado. El sensor no necesita esperar nada de esto para saber
+    que su lectura fue recibida.
+    """
     try:
         sb = get_supabase()
 
@@ -129,23 +142,24 @@ def recibir_lectura(lectura: SensorReading):
               f"- {lectura.congestion_level.upper()} "
               f"| {lectura.avg_speed_kmh} km/h")
 
-        # Llamar al microservicio de prediccion
         if registro_id:
             llamar_prediccion(registro_id, lectura)
 
-        return {
-            "mensaje":         "Lectura guardada en Supabase",
-            "id":              registro_id,
-            "intersection_id": lectura.intersection_id,
-            "congestion":      lectura.congestion_level,
-            "timestamp":       lectura.timestamp,
-        }
-
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error guardando lectura: {str(e)}"
-        )
+        print(f"[{lectura.intersection_id}] Aviso: fallo el guardado/notificacion en segundo plano: {e}")
+
+
+@app.post("/readings", status_code=201)
+def recibir_lectura(lectura: SensorReading, background_tasks: BackgroundTasks):
+    background_tasks.add_task(_guardar_y_notificar_async, lectura)
+
+    return {
+        "mensaje":         "Lectura recibida, guardado en proceso",
+        "id":              None,  # se asigna en Supabase; no se espera aqui
+        "intersection_id": lectura.intersection_id,
+        "congestion":      lectura.congestion_level,
+        "timestamp":       lectura.timestamp,
+    }
 
 
 # ─────────────────────────────────────────────────────────────
