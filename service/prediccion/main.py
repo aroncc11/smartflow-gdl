@@ -146,8 +146,11 @@ app.add_middleware(
 # LLAMAR AL OPTIMIZADOR
 # ─────────────────────────────────────────────────────────────
 def llamar_optimizacion(niveles: list):
-    # Comunicacion sincrona via HTTP directo entre microservicios
-    # (no se usa un broker de mensajes como RabbitMQ en este proyecto).
+    # Comunicacion via HTTP directo entre microservicios (no se usa un
+    # broker de mensajes como RabbitMQ en este proyecto). Se invoca desde
+    # un BackgroundTask (ver mas abajo), nunca de forma sincrona dentro de
+    # la peticion /predict: el cliente que pidio la prediccion no necesita
+    # esperar a que el optimizador termine para recibir su propia respuesta.
     try:
         import httpx
         httpx.post(
@@ -287,7 +290,16 @@ def predecir(lectura: LecturaInput, background_tasks: BackgroundTasks):
                 niveles_actuales.get(f"INT-00{i}", "medium")
                 for i in range(1, 6)
             ]
-            llamar_optimizacion(niveles)
+            # Antes esta llamada era sincrona: /predict esperaba la
+            # respuesta completa del servicio de optimizacion (que a su
+            # vez corre un algoritmo genetico) antes de poder responder al
+            # cliente. Bajo rafagas de lecturas simultaneas (las 5
+            # intersecciones del simulador llegan casi al mismo tiempo),
+            # eso encadenaba las peticiones una tras otra y disparaba la
+            # latencia de /predict junto con la de /optimize. El cliente
+            # de /predict no necesita el resultado de la optimizacion para
+            # recibir su propia prediccion, asi que se mueve a background.
+            background_tasks.add_task(llamar_optimizacion, niveles)
 
         # El INSERT en Supabase se hace DESPUES de responder al cliente.
         background_tasks.add_task(_guardar_en_supabase_async, datos, lectura.intersection_id)
