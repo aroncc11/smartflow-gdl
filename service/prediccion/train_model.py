@@ -24,7 +24,7 @@ import joblib
 import os
 
 
-DATABASE_URL = "postgresql+pg8000://postgres:sMARTFLOWgdl@db.ipcunenaytijdproskxf.supabase.co:5432/postgres"
+DATABASE_URL = os.environ["DATABASE_URL"]  # definir como variable de entorno; no guardar claves en el codigo
 
 engine = create_engine(DATABASE_URL)
 
