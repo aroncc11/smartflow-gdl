@@ -18,6 +18,21 @@ INGESTA_URL = os.getenv(
 )
 
 # ─────────────────────────────────────────────────────────────
+# RETROALIMENTACION DEL OPTIMIZADOR (lazo cerrado, opt-in)
+# ─────────────────────────────────────────────────────────────
+# Si FEEDBACK_ENABLED=1, el sensor consulta el ultimo tiempo de verde
+# optimizado de su interseccion (GET /optimize/latest) y lo traduce en un
+# cambio de CAPACIDAD de la interseccion (la demanda de vehiculos NO cambia:
+# el verde no genera ni elimina autos, solo cambia cuantos pueden pasar).
+#   factor_capacidad = 1 + FEEDBACK_GAIN * (verde_optimo/verde_default - 1)
+# con la razon acotada a [0.5, 2.0]. FEEDBACK_GAIN es un parametro del
+# MODELO de simulacion, no una medicion.
+FEEDBACK_ENABLED = os.getenv("FEEDBACK_ENABLED", "0") == "1"
+FEEDBACK_GAIN    = float(os.getenv("FEEDBACK_GAIN", "0.2"))
+OPTIMIZACION_URL = os.getenv("OPTIMIZACION_URL", "").rstrip("/")
+FEEDBACK_TTL_S   = 60
+
+# ─────────────────────────────────────────────────────────────
 # ZONA HORARIA DE GUADALAJARA (UTC-6)
 # ─────────────────────────────────────────────────────────────
 GDL_TZ = timezone(timedelta(hours=-6))
@@ -65,6 +80,8 @@ class SensorBase:
         self._incidente    = {"activo": False, "detalle": None}
         self._clima_actual = self._generar_clima()
         self._hora_clima   = datetime.now(GDL_TZ).hour
+        self._fb_factor    = 1.0
+        self._fb_ts        = 0.0
         print(f"Sensor [{config['id']}] {config['nombre']} iniciado")
 
     def _generar_clima(self) -> str:
@@ -119,8 +136,26 @@ class SensorBase:
 
         return max(0, round(vehiculos))
 
+    def _factor_capacidad(self) -> float:
+        """Factor de capacidad segun el ultimo verde optimizado (1.0 si apagado o sin datos)."""
+        if not (FEEDBACK_ENABLED and OPTIMIZACION_URL):
+            return 1.0
+        if time.time() - self._fb_ts < FEEDBACK_TTL_S:
+            return self._fb_factor
+        self._fb_ts = time.time()
+        try:
+            r = requests.get(f"{OPTIMIZACION_URL}/optimize/latest", timeout=5)
+            d = r.json().get(self.config["id"])
+            ratio = float(d["verde_optimo"]) / float(d["verde_default"])
+            ratio = min(2.0, max(0.5, ratio))
+            self._fb_factor = 1 + FEEDBACK_GAIN * (ratio - 1)
+        except Exception as e:
+            print(f"[{self.config['id']}] Feedback no disponible, factor=1.0: {e}")
+            self._fb_factor = 1.0
+        return self._fb_factor
+
     def _calcular_velocidad(self, vehiculos: int, clima: str) -> float:
-        capacidad_30s   = self.config["volumen_pico"] / 120
+        capacidad_30s   = self.config["volumen_pico"] / 120 * self._factor_capacidad()
         ratio           = min(vehiculos / max(capacidad_30s, 1), 1.0)
         velocidad_libre = self.config["velocidad_libre"]
         factor_clima    = FACTORES_VELOCIDAD_CLIMA[clima]
