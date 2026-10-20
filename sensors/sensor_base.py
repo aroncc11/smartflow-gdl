@@ -31,6 +31,8 @@ FEEDBACK_ENABLED = os.getenv("FEEDBACK_ENABLED", "0") == "1"
 FEEDBACK_GAIN    = float(os.getenv("FEEDBACK_GAIN", "0.2"))
 OPTIMIZACION_URL = os.getenv("OPTIMIZACION_URL", "").rstrip("/")
 FEEDBACK_TTL_S   = 60
+# Lista (separada por comas) de intersecciones con retroalimentacion; vacio = todas.
+FEEDBACK_ONLY    = {x.strip() for x in os.getenv("FEEDBACK_ONLY", "").split(",") if x.strip()}
 
 # ─────────────────────────────────────────────────────────────
 # ZONA HORARIA DE GUADALAJARA (UTC-6)
@@ -139,6 +141,8 @@ class SensorBase:
     def _factor_capacidad(self) -> float:
         """Factor de capacidad segun el ultimo verde optimizado (1.0 si apagado o sin datos)."""
         if not (FEEDBACK_ENABLED and OPTIMIZACION_URL):
+            return 1.0
+        if FEEDBACK_ONLY and self.config["id"] not in FEEDBACK_ONLY:
             return 1.0
         if time.time() - self._fb_ts < FEEDBACK_TTL_S:
             return self._fb_factor
