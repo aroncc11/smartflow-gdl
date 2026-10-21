@@ -27,6 +27,7 @@ INGESTA_URL = os.getenv(
 #   factor_capacidad = 1 + FEEDBACK_GAIN * (verde_optimo/verde_default - 1)
 # con la razon acotada a [0.5, 2.0]. FEEDBACK_GAIN es un parametro del
 # MODELO de simulacion, no una medicion.
+LABEL_NOISE      = float(os.getenv("LABEL_NOISE", "1.0"))
 FEEDBACK_ENABLED = os.getenv("FEEDBACK_ENABLED", "0") == "1"
 FEEDBACK_GAIN    = float(os.getenv("FEEDBACK_GAIN", "0.2"))
 OPTIMIZACION_URL = os.getenv("OPTIMIZACION_URL", "").rstrip("/")
@@ -170,16 +171,22 @@ class SensorBase:
         return max(5.0, round(velocidad, 1))
 
     def _calcular_congestion(self, velocidad: float) -> str:
-        if velocidad > 40:
-            return random.choices(["low", "medium"], weights=[0.93, 0.07])[0]
-        elif velocidad > 35:
-            return random.choices(["low", "medium"], weights=[0.80, 0.20])[0]
-        elif velocidad > 20:
-            return random.choices(["low", "medium", "high"], weights=[0.10, 0.78, 0.12])[0]
-        elif velocidad > 15:
-            return random.choices(["medium", "high"], weights=[0.75, 0.25])[0]
-        else:
-            return random.choices(["medium", "high"], weights=[0.12, 0.88])[0]
+        # LABEL_NOISE escala la probabilidad de que la etiqueta NO sea la dominante
+        # de su banda de velocidad: 1.0 = comportamiento original, 0 = determinista.
+        bandas = [
+            (40, ["low", "medium"],         [0.93, 0.07]),
+            (35, ["low", "medium"],         [0.80, 0.20]),
+            (20, ["low", "medium", "high"], [0.10, 0.78, 0.12]),
+            (15, ["medium", "high"],        [0.75, 0.25]),
+            (-1, ["medium", "high"],        [0.12, 0.88]),
+        ]
+        for limite, clases, pesos in bandas:
+            if velocidad > limite:
+                if LABEL_NOISE != 1.0:
+                    d = max(range(len(pesos)), key=lambda i: pesos[i])
+                    pesos = [w * LABEL_NOISE for w in pesos]
+                    pesos[d] = 1 - sum(w for i, w in enumerate(pesos) if i != d)
+                return random.choices(clases, weights=pesos)[0]
 
     def generate_reading(self) -> dict:
         now     = datetime.now(GDL_TZ)
