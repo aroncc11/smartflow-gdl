@@ -44,7 +44,7 @@ INTERSECCIONES_CONFIG = [
         "lon":            -103.3734237,
         "volumen_pico":    2800,
         "volumen_normal":  1400,
-        "velocidad_libre": 60,
+        "velocidad_libre": 28,  # ajustada el 2026-08-11 (antes 60)
     },
     {
         "id":              "INT-003",
@@ -62,7 +62,7 @@ INTERSECCIONES_CONFIG = [
         "lon":            -103.3689243,
         "volumen_pico":    2400,
         "volumen_normal":  1200,
-        "velocidad_libre": 50,
+        "velocidad_libre": 25,  # ajustada el 2026-08-11 (antes 50)
     },
     {
         "id":              "INT-005",
@@ -98,6 +98,7 @@ def comparar():
     print("=" * 65)
 
     ajustes_necesarios = []
+    comparaciones = []  # evidencia completa de las cinco intersecciones
 
     for config in INTERSECCIONES_CONFIG:
         print(f"\n[{config['id']}] {config['nombre']}")
@@ -126,6 +127,16 @@ def comparar():
             print(f"  Simulador:      {vel_sim} km/h")
             print(f"  Diferencia:     {diff:+.1f} km/h  "
                   f"{'OK' if match else 'Requiere ajuste'}")
+            comparaciones.append({
+                "id": config["id"], "nombre": config["nombre"],
+                "velocidad_libre_simulador": config["velocidad_libre"],
+                "velocidad_simulada_kmh": vel_sim,
+                "tomtom_velocidad_actual_kmh": vel_real,
+                "tomtom_velocidad_libre_kmh": vel_libre_tt,
+                "tomtom_confianza": confianza,
+                "diferencia_kmh": round(diff, 1),
+                "dentro_de_tolerancia_10kmh": bool(match),
+            })
 
             # ── Sugerir ajuste si es necesario ────────────
             if not match:
@@ -161,6 +172,16 @@ def comparar():
             "ajustes":  ajustes_necesarios,
         }, f, ensure_ascii=False, indent=2)
     print("\n Resultados guardados en calibracion_resultado.json")
+
+    # Evidencia completa (las cinco intersecciones), sin sobreescribir el archivo anterior
+    with open("calibracion_completa.json", "w", encoding="utf-8") as f:
+        json.dump({
+            "fecha":         datetime.now().isoformat(),
+            "tolerancia_kmh": 10,
+            "comparaciones": comparaciones,
+            "ajustes":       ajustes_necesarios,
+        }, f, ensure_ascii=False, indent=2)
+    print(" Evidencia completa guardada en calibracion_completa.json")
 
 def aplicar_ajustes():
     import re
