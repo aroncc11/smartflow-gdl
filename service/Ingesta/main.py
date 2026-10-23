@@ -77,8 +77,20 @@ def root():
 # ─────────────────────────────────────────────────────────────
 # GET /health - estado detallado
 # ─────────────────────────────────────────────────────────────
+
+from fastapi.middleware.cors import CORSMiddleware
+# Solo GET: permite que el dashboard mida la latencia real con fetch() a /health.
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET"], allow_headers=["*"])
+
 @app.get("/health")
 def health():
+    # Ligero a proposito: no consulta la base, para que mida la respuesta del servicio
+    # y no el conteo de una tabla grande en otra region. El estado de la base esta en /health/detalle.
+    return {"estado": "healthy", "timestamp": datetime.utcnow().isoformat()}
+
+
+@app.get("/health/detalle")
+def health_detalle():
     try:
         sb     = get_supabase()
         result = sb.table("traffic_readings").select("id", count="exact").execute()

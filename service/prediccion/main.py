@@ -198,6 +198,25 @@ def root():
 # ─────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
+    # Ligero a proposito: no consulta la base. El conteo exacto de predicciones
+    # (lento y creciente) esta en /health/detalle.
+    redis_ok = False
+    if redis_client:
+        try:
+            redis_client.ping()
+            redis_ok = True
+        except Exception:
+            redis_ok = False
+    return {
+        "estado":    "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "modelo":    "Random Forest cargado",
+        "redis":     "ok" if redis_ok else "no disponible",
+    }
+
+
+@app.get("/health/detalle")
+def health_detalle():
     try:
         result = supabase.table("predictions").select("id", count="exact").execute()
         total  = result.count if result.count else 0
