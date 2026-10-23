@@ -235,8 +235,11 @@ class SensorBase:
             self._enviar(lectura)
 
         ciclo()
-        schedule.every(30).seconds.do(ciclo)
+        # Planificador propio por sensor: el global de `schedule` es compartido
+        # entre threads y cada thread ejecutaba los jobs de los demas (lecturas duplicadas).
+        planificador = schedule.Scheduler()
+        planificador.every(30).seconds.do(ciclo)
 
         while True:
-            schedule.run_pending()
+            planificador.run_pending()
             time.sleep(1)
